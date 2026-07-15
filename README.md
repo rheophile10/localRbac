@@ -1,161 +1,184 @@
 # localRbac
 
-A working demonstration that **role-based access control can be enforced purely by
-public-key cryptography** — no server, no online authority at access time — over a
-**local-first CRDT database** stored in an ordinary SQLite file opened from `file://`.
+**Role-based access control enforced by cryptography, over a local-first CRDT
+database, in one offline HTML file.**
 
-The app is one self-contained `dist/index.html` (SQLite-WASM + crypto inlined; zero
-external fetches). A second page, `dist/demo.html`, **iframes that app three times**
-so you can watch three users collaborate on one screen.
+There is no server to check permissions and no network at access time. The data
+is a convergent SQLite database ([cr-sqlite](https://github.com/vlcn-io/cr-sqlite))
+that participants copy, edit offline, and merge by exchanging signed deltas. Who
+may *read* a record is decided by whether you hold the key to decrypt it; who may
+*write* is decided by an admin-signed grant checked against every row's signature
+**at merge time**. Copy the file, edit it on a plane, hand the delta to a
+colleague on a USB stick — the rules survive the trip.
 
-![three users, converged and interleaved](shots/03-interleaved.png)
+- **Live demo:** <https://rheophile10.github.io/localRbac/demo.html> — three
+  users (admin / writer / reader) collaborating on one page.
+- **Single-user app:** <https://rheophile10.github.io/localRbac/> — one instance.
 
-## What it demonstrates
+## The premise
 
-Premise: on a local file there is no server to check permissions, and you cannot
-stop someone reading the bytes on their own disk. So access control must be
-*cryptographic*, and must survive the file being copied, edited offline, and merged.
+On a local file you cannot stop someone reading the bytes on their own disk, and
+there is no online authority to ask "is this person allowed?". So access control
+has to be *cryptographic* and it has to be *portable* — it must still hold after
+the file is copied, mutated offline, and merged with someone else's copy.
 
-- **Roles** — read+write, read-only, denied — provisioned per user by an admin.
-- **Read control is encryption.** Records are encrypted; only users the admin sealed
-  the data-key to can decrypt. A denied user holding the same data sees `🔒`.
-- **Write control is signatures + policy.** Every change is Ed25519-signed and is
-  accepted on merge only if the author holds an admin-signed *writer grant*. Forged
-  or unauthorized changes are **rejected at merge**, not hidden in the UI.
-- **Everything is one signed op-log** — identities, grants, key-wraps, the admin
-  root, the data-key version, and the records themselves are all ops. So an
-  **ops-only difflog** fully reconstructs state on a fresh machine, and merge stays
-  commutative, associative, idempotent → **convergent**.
+- **Read control is encryption.** Every record cell is encrypted under a
+  per-resource **data-encryption key (DEK)**. You can read a resource only if the
+  admin has sealed that DEK to your public key. A user without the key holds the
+  same ciphertext and sees `🔒`.
+- **Write control is signatures + policy.** Every row carries its author's
+  Ed25519 public key and a signature. A change is accepted on merge only if the
+  author holds an admin-signed *writer grant* for that resource. Forged or
+  unauthorized rows are **rejected at merge**, not merely hidden in the UI.
+- **Convergence is cr-sqlite.** The CRDT gives commutative, associative,
+  idempotent per-column merge; our RBAC rides on top of `crsql_changes` as the
+  transport. Any two replicas that have exchanged everyone's deltas converge to
+  the same state.
 
-## How it works on local files
+## Identity: a keystore file you hold, never stored in the browser
 
-Each participant keeps two files: `index.html` (the app, identical for everyone) and
-their own `*.sqlite` (the data — the shared document). **They never connect.** They
-collaborate by exchanging deltas:
+Identities are **generated** WebCrypto keypairs (Ed25519 for signing, X25519 for
+sealing), not derived from a passphrase. The keypair is wrapped in an
+**Argon2id-encrypted keystore file** the user downloads and keeps. It is *never*
+written to IndexedDB — stealing the file is a required first step for any offline
+attack, and Argon2id (memory-hard) makes the passphrase expensive to brute-force
+even then. Provisioning is by **public-key card exchange**: a user exports a
+self-signed identity card `{pub, name, xpub, sig}`; the admin imports it and
+grants a role to that key, never seeing any private material.
 
-- **Sign in** — name + passphrase deterministically derive an Ed25519/X25519 keypair
-  (Argon2id — memory-hard, so a stolen file is expensive to brute-force offline).
-  Nothing is stored; the same credentials reproduce the same identity.
-- **Admin** is whoever creates the genesis DB; their key is pinned as the root of
-  trust (trust-on-first-use), carried in the op-log so it propagates.
-- **Provision users** — admin creates a user by initial credentials and assigns a
-  role (a demo simplification; a real deploy exchanges public keys, not passwords).
-- **Difflog** — the unit of exchange: `{ baseHash, ops }`, a delta of signed ops
-  since a marked baseline, stamped with `stateRoot()` — a content **hash of the base
-  op-set**. Export it, send it (email/USB/drive), the other side imports & merges.
-- **State root** — a SHA-256 over the sorted op-ids. Two replicas showing the same
-  root have **converged**; it's how you verify sync without shipping data.
+## Compartmented RBAC on cr-sqlite (`packages/datalayer/src/engine/crengine.ts`)
 
-Concurrent writers **interleave** deterministically: each op carries a Hybrid
-Logical Clock, so after everyone merges everyone's difflogs, all replicas show the
-same time-ordered, interleaved list (see the screenshot / video).
+The engine is **resource- and column-agnostic**. Records live in a single generic
+entity-attribute-value table; there is no per-record-type schema. The essential
+core tables are:
 
-### The demo (`dist/demo.html`) is a simulation of that exchange
-Three iframes = three machines. In real use each is a different person, and moving a
-difflog between them is *saving a file and sending it*. The Dump/Load `.sqlite`
-buttons are the genuine full-file path; the difflog textareas are the delta path.
+| Table | Role |
+|---|---|
+| `adminroot` | the admin's pubkey, pinned trust-on-first-use, carried in the op-log |
+| `identity` | known public identity cards (self- or admin-signed) |
+| `grantrec` | admin-signed `(subject, resource, role)` grants |
+| `dekver` | current DEK version per resource (rotation counter) |
+| `keywrap` | a resource DEK sealed (X25519) to one subject's key |
+| `cell` | `(rid × col)` encrypted value under one resource's DEK + author + sig |
+| `archived` | tombstone flag per record |
+| `checkpoint` | signed consensus points (hash / epoch / parent / members) |
 
-## Where enforcement lives (`src/device.ts`)
+Everything except a local watermark table is a cr-sqlite CRR, so an ops-only
+changeset fully reconstructs state on a fresh machine.
 
-| Concern | Mechanism | Functions |
-|---|---|---|
-| Write control | Ed25519 sig + admin grant, checked on append **and** at merge | `authorizeNoteWrite`, `mergeOps` |
-| Read control | xchacha20 record encryption; data-key sealed (X25519) per reader | `getDEK`, `tryDecrypt` |
-| Roles / root | admin-signed ops; admin pinned trust-on-first-use | `authorizeSystemOp`, `provisionUser`, `grant`, `revoke` |
-| Read revocation | data-key rotation + re-seal to remaining readers | `rotateDek` |
-| Diff / convergence | content hash of the op-set; delta since a baseline | `stateRoot`, `markBaseline`, `exportDiff`, `importDiff` |
+**How the pieces enforce the rules:**
+
+- **Read** — `listRecords` decrypts only the resources you hold a DEK for and
+  LWW-folds across compartments. Admin derives every DEK from a root key via HKDF
+  (`dek:<resource>` / `v<ver>`); everyone else unseals their DEK from `keywrap`.
+- **Write** — `writeCell` refuses locally if you're not a writer, and — the part
+  that actually matters — **import re-checks every incoming row**: the changeset
+  is applied to a throwaway *staging* connection, each row's signature is
+  verified, and each author is checked against the admin-verified grant state
+  (main ∪ staging). Only if all rows pass does it merge into the real database.
+- **Revoke** — `revoke` writes a revocation and, by default, **rotates the DEK**:
+  bump `dekver`, re-seal the new key to the remaining members. The revoked user
+  keeps old ciphertext but is locked out of everything written afterward.
+
+## Local consensus vs. group consensus
+
+Two replicas reconcile by exchanging changesets and comparing a **state root** —
+a SHA-256 over the sorted cell/grant state. Equal roots ⇒ converged, verified
+without shipping the data itself.
+
+For a whole subgroup there is a **consensus ceremony** (`runConsensus`): a
+coordinator merges every member's diff-since-the-last-checkpoint, *optionally*
+rotates all DEKs, and records a signed **checkpoint**. It then hands each member a
+**rebuild slice** — a self-contained changeset with the auth/checkpoint state plus
+only the non-archived cells for resources that member may read. Members **wipe
+their local store and rebuild from the slice**. That single step does compaction,
+data-minimization (you get back only what you're entitled to), and redistribution
+of the agreed state. cr-sqlite's `db_version` is a *local* clock (it's reassigned
+on merge), so "diff since checkpoint H" uses a local watermark, not a portable
+version vector — a subtlety that bit us and is documented in the code.
+
+## Threshold custody — no single keyholder on the critical path (`packages/datalayer/src/vault.ts`)
+
+A full database dump (or any payload) can be sealed so that **no one person can
+open it** — only a quorum of **k-of-n custodians** cooperating.
+[Shamir's secret sharing](https://dl.acm.org/doi/10.1145/359168.359176) splits a
+random DEK into `n` shares over GF(2⁸); reconstructing it needs any `k`. Each
+share is then sealed to one custodian's X25519 key.
+
+- `sealVault(payload, custodians, k)` → encrypt under a random DEK → Shamir-split
+  the DEK → seal share *i* to custodian *i*. Nothing is recoverable below quorum.
+- Distributed unlock (no hot-seat): each custodian re-seals their share to the
+  chosen opener; the opener combines ≥ k → DEK → decrypts. Fewer/wrong shares
+  **fail closed** on the AEAD tag; the DEK is zeroed after use.
+
+The point is human, not just cryptographic: a group can keep records together
+without making any single member worth coercing. No one holder is a
+[$5-wrench](https://xkcd.com/538/) single point of failure. Shamir only governs
+*who can reassemble the key*; confidentiality still rests on the AEAD.
 
 ## Crypto architecture (swappable per domain)
 
-Cryptography lives behind a small abstraction so any protocol or dependency can
-be swapped in one place. Each **functional domain** has an `index.ts` exporting
-the business functions, backed by a concrete implementation file:
+Each cryptographic concern is a folder with an `index.ts` that picks a concrete
+implementation, so a protocol can be swapped in one place:
 
 ```
-src/crypto/
-  index.ts            composes the business API (deriveIdentity, signOp, sealTo, …)
-  kdf/     → hash-wasm Argon2id   (memory-hard password derivation; WASM; async)
-  signing/ → noble Ed25519        (write authorization)
-  sealing/ → noble X25519 box     (read control: seal a data-key to a reader)
-  aead/    → noble xchacha20poly  (record encryption)
-  hash/    → noble sha256/hkdf    (state root + key expansion; sync)
-  util.ts  hex / utf8 / random / concat
+packages/datalayer/src/crypto/
+  kdf/            → hash-wasm Argon2id   (memory-hard keystore wrapping)
+  signing/        → WebCrypto Ed25519    (write authorization)
+  sealing/        → WebCrypto X25519 box (seal a DEK to a reader)
+  aead/           → WebCrypto AES-256-GCM (record + payload encryption)
+  hash/           → WebCrypto SHA-256/HKDF (state root + DEK derivation)
+  secret-sharing/ → Shamir over GF(2⁸)   (the one hand-rolled primitive)
 ```
 
-To change, say, the KDF or the signature scheme, edit the one `export … from`
-line in that domain's `index.ts`; `device.ts`, `ui.ts`, and the rest of
-`crypto/index.ts` are untouched. `crypto.PROTOCOLS` reports what's wired in.
-
-Notes:
-- **KDF is Argon2id via hash-wasm** — memory-hard (64 MiB), so a stolen file is
-  expensive to brute-force offline; ~10× faster than a pure-JS KDF, which is why
-  we can afford the strong parameters. It's WASM, so `deriveIdentity` (and thus
-  `login`/`provisionUser`) are **async**. The Argon2 parameters are a protocol
-  constant — every participant must match them.
-- Both WASM modules (SQLite + Argon2) are base64-inlined → still zero fetches on
-  `file://`.
-
-## Threshold custody — seal / unlock ceremony (`packages/datalayer/src/vault.ts`)
-
-Lock a payload (e.g. a full database dump) so **no single person can open it** —
-only a quorum of **k-of-n custodians** cooperating. Modelled on regina's
-threshold custody, using our own X25519 identities instead of RSA:
-
-- `sealVault(payload, custodians, k)` → random data-key (DEK) → encrypt payload
-  (xchacha20) → **Shamir-split** the DEK k-of-n (GF(2⁸)) → seal share *i* to
-  custodian *i*'s X25519 public key. Returns a `SealedVault` (no secret is
-  recoverable below quorum).
-- `contributeShare(vault, identity)` → a custodian unseals their one share (null
-  if they aren't a custodian).
-- `openVault(vault, shares)` → needs ≥ k shares → combine → DEK → decrypt. Fewer
-  or wrong shares **fail closed** (AEAD tag). DEK is zeroed after use.
-- `quorumFor(n, ratio=0.8)` → default 4-of-5.
-
-Shamir only controls *who can reassemble the DEK*; confidentiality rests on the
-AEAD. Covered by `packages/datalayer/tests/{shamir,vault}.test.ts`.
-
-**Recipient-targeted merge files** (`device.sealDiffFor` / `openSealedDiff`): a
-difflog sealed to one recipient's key, so two users can hand each other merge
-files only they can open (the ops inside are still individually signed).
+Almost everything is native WebCrypto — fast, dependency-free, and it works on
+`file://`. The sync-critical IndexedDB page cipher is the one exception (it must
+be synchronous because an IndexedDB transaction auto-commits across an `await`),
+so it keeps `@noble/ciphers` xchacha20. Both WASM blobs (SQLite + Argon2) are
+base64-inlined → **zero network fetches**, even on `file://`.
 
 ## Monorepo layout
 
-Two packages: a headless **datalayer** (the engine) and an **app** that wires it
-to the UI and produces the single `index.html`.
+A headless **datalayer** (the engine) and an **app** that wires it to a UI and
+produces the single `index.html`. The datalayer knows nothing about "notes" — the
+notes convention (title/body columns, seeds, UI) lives entirely in the demo.
 
 ```
 packages/
-  datalayer/            @localrbac/datalayer — headless, no DOM, no build tooling
+  datalayer/            @localrbac/datalayer — headless, no DOM
     src/
-      index.ts          barrel: createDevice, crypto, vault, types
-      device.ts         CRDT + RBAC engine (one per user)
-      vault.ts          threshold-custody seal/unlock ceremony
-      types.ts
-      crypto/           per-domain crypto (kdf/signing/sealing/aead/hash/secret-sharing)
-    tests/              Vitest — engine, shamir, vault (headless, no browser)
+      engine/crengine.ts    compartmented-RBAC engine on cr-sqlite
+      vault.ts              threshold-custody seal/unlock ceremony
+      consensus/            checkpoint-chain pure verbs
+      compartment/          per-resource decrypt + LWW fold
+      crypto/               per-domain crypto (see above)
+    tests/                  Vitest — engine, consensus, rotation, rebuild, shamir, vault
   app/                  @localrbac/app — Vite + TS → dist/index.html
-    index.html          one app instance (one user)
-    public/demo.html    static shell that iframes the built app 3x
-    src/                ui.ts, main.ts, style.css   (imports @localrbac/datalayer)
-    vite.config.ts      singlefile + inlines SQLite WASM; aliases the datalayer source
-    tests/rbac.spec.ts  Playwright — drives the 3-iframe demo end to end
-    scripts/            shots.ts, record.ts
+    src/notes.ts            the "notes" demo convention on the generic engine
+    src/ui.ts, main.ts      vanilla-DOM UI for one device
+    public/demo.html        iframes the built app 3× (three users, one page)
+    tests/rbac.spec.ts      Playwright — drives the 3-iframe demo end to end
 ```
 
-## Build, run, test (from the repo root)
+## Build, run, test
 
-```
-npm install             # installs both workspaces
-npm run build           # -> packages/app/dist/index.html + demo.html
-npm run dev             # hot-reloading dev server (open /demo.html for 3-up)
-open packages/app/dist/demo.html   # the three-user demo, on file://
-
-npm run typecheck       # both packages (tsc --noEmit, strict)
-npm run test:unit       # datalayer Vitest — RBAC, shamir, vault
-npm run test:e2e        # build app -> Playwright
-npm test                # typecheck -> unit -> build -> e2e
-npm run shots           # regenerate packages/app/shots/
-npm run record          # regenerate packages/app/videos/*.webm (captioned slow-mo)
+```bash
+npm install
+npm run build              # -> packages/app/dist/{index.html, demo.html}
+npm run dev                # hot-reloading dev server (open /demo.html for 3-up)
+npm run typecheck          # both packages, strict
+npm run test:unit          # datalayer Vitest (RBAC, consensus, shamir, vault)
+npm run test:e2e           # build -> Playwright against the 3-iframe demo
 ```
 
-Artifacts: `shots/*.png`, `videos/rbac-difflog-demo.webm` (~50s captioned walkthrough).
+## Status
+
+Proof of concept. Steps implemented: consensus checkpoints, merge-confirm by
+state root, optional DEK rotation, and the wipe-and-rebuild consensus loop.
+Group messaging (OpenMLS) is the next milestone.
+
+## References
+
+- [Shamir, *How to Share a Secret*, CACM 1979](https://dl.acm.org/doi/10.1145/359168.359176)
+- [xkcd 538 — *Security*](https://xkcd.com/538/)
+- [cr-sqlite](https://github.com/vlcn-io/cr-sqlite) — convergent replicated SQLite
