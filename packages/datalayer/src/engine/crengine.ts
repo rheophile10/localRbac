@@ -17,7 +17,7 @@
  *
  * 'notes' is the default resource, so single-compartment use is unchanged.
  * ==========================================================================*/
-import type { Conn } from './sqlite';
+import type { Conn, SqlValue } from './sqlite';
 import * as C from '../crypto';
 import * as compartment from '../compartment';
 import * as consensus from '../consensus';
@@ -46,7 +46,8 @@ const SCHEMA = `
   CREATE TABLE keywrap(pk TEXT NOT NULL PRIMARY KEY, subject TEXT, resource TEXT, dek_ver INTEGER, box TEXT, author TEXT, sig TEXT);
   CREATE TABLE cell(pk TEXT NOT NULL PRIMARY KEY, rid TEXT, resource TEXT, col TEXT, ct TEXT, dek_ver INTEGER, author TEXT, sig TEXT);
   CREATE TABLE archived(rid TEXT NOT NULL PRIMARY KEY, flag INTEGER, author TEXT, sig TEXT);
-  CREATE TABLE checkpoint(hash TEXT NOT NULL PRIMARY KEY, epoch INTEGER, parent TEXT, vv TEXT, members TEXT, author TEXT, sig TEXT);
+  CREATE TABLE checkpoint(hash TEXT NOT NULL PRIMARY KEY, epoch INTEGER, parent TEXT, members TEXT, author TEXT, sig TEXT);
+  CREATE TABLE _wm(hash TEXT NOT NULL PRIMARY KEY, dbv INTEGER); -- LOCAL, not a CRR: our db_version when we adopted a checkpoint
   SELECT crsql_as_crr('adminroot');
   SELECT crsql_as_crr('dekver');
   SELECT crsql_as_crr('identity');
@@ -65,7 +66,7 @@ const sigInput = {
   keywrap: (r: { subject: string; resource: string; dek_ver: number; box: string }) => j('keywrap', r.subject, r.resource, r.dek_ver, r.box),
   cell: (r: { pk: string; ct: string; dek_ver: number }) => j('cell', r.pk, r.ct, r.dek_ver),
   archived: (r: { rid: string; flag: number }) => j('archived', r.rid, r.flag),
-  checkpoint: (r: { hash: string; epoch: number; parent: string; vv: string; members: string }) => j('checkpoint', r.hash, r.epoch, r.parent, r.vv, r.members),
+  checkpoint: (r: { hash: string; epoch: number; parent: string; members: string }) => j('checkpoint', r.hash, r.epoch, r.parent, r.members),
 };
 
 // A signed identity card — a user's public identity, shared out-of-band so an
@@ -370,27 +371,35 @@ export const createCrDevice = (engine: CrEngine, label: string) => {
     conn().all<consensus.Checkpoint>('SELECT hash, epoch, parent FROM checkpoint');
   const latestCheckpoint = async (): Promise<string> => consensus.tip(await checkpoints());
 
+  const localDbVersion = async (): Promise<number> => Number(await conn().scalar('SELECT crsql_db_version()') ?? 0);
+  // Snapshot our LOCAL db_version as the watermark for a checkpoint we now hold,
+  // so exportSince(hash) = our writes with db_version > watermark. Local, not a CRR.
+  const setWatermark = async (hash: string): Promise<void> => {
+    await conn().run('INSERT OR IGNORE INTO _wm(hash,dbv) VALUES(?,?)', [hash, await localDbVersion()]);
+  };
+
   /** Record a signed consensus checkpoint over the current state (admin only). */
   const recordCheckpoint = async (): Promise<string> => {
     if (!(await isAdmin())) throw new Error('admin only');
     const cps = await checkpoints();
     const parent = consensus.tip(cps);
     const epoch = cps.reduce((m, c) => Math.max(m, c.epoch), -1) + 1;
-    const vv = JSON.stringify(await conn().versionVector());
     const members = JSON.stringify((await conn().all<{ pub: string }>('SELECT pub FROM identity ORDER BY pub')).map((r) => r.pub));
     const hash = await C.sha256hex(j('checkpoint', await stateRoot(), epoch, parent));
-    const row = { hash, epoch, parent, vv, members };
+    const row = { hash, epoch, parent, members };
     const sig = await sign(sigInput.checkpoint(row));
-    await conn().run('INSERT OR REPLACE INTO checkpoint(hash,epoch,parent,vv,members,author,sig) VALUES(?,?,?,?,?,?,?)',
-      [hash, epoch, parent, vv, members, session().edPub, sig]);
+    await conn().run('INSERT OR REPLACE INTO checkpoint(hash,epoch,parent,members,author,sig) VALUES(?,?,?,?,?,?)',
+      [hash, epoch, parent, members, session().edPub, sig]);
+    await setWatermark(hash);
     return hash;
   };
 
-  /** Export the diff of ops added since a given checkpoint (its version vector). */
+  /** Export the diff of ops we've added since we adopted a checkpoint (using our
+   *  LOCAL db_version watermark — cr-sqlite's db_version isn't portable). */
   const exportSince = async (checkpointHash: string): Promise<string> => {
-    const vv = await conn().scalar<string>('SELECT vv FROM checkpoint WHERE hash=?', [checkpointHash]);
-    if (vv === null) throw new Error('unknown checkpoint');
-    return conn().exportSinceVV(JSON.parse(vv) as Record<string, number>);
+    const dbv = await conn().scalar<number>('SELECT dbv FROM _wm WHERE hash=?', [checkpointHash]);
+    if (dbv === null) throw new Error('unknown checkpoint (no local watermark)');
+    return conn().exportChangesetSQL(Number(dbv));
   };
 
   // Read the asserted rows out of a staging conn, verify each row's embedded
@@ -422,16 +431,18 @@ export const createCrDevice = (engine: CrEngine, label: string) => {
       if (!await C.verifyMessage(sigInput.keywrap(r), r.sig, r.author)) bad.push(`keywrap ${r.subject}: bad sig`);
       else if (!isAdminAuthor(r.author)) bad.push(`keywrap ${r.subject}: not admin`);
     }
-    for (const r of await staging.all<{ hash: string; epoch: number; parent: string; vv: string; members: string; author: string; sig: string }>('SELECT hash,epoch,parent,vv,members,author,sig FROM checkpoint')) {
+    for (const r of await staging.all<{ hash: string; epoch: number; parent: string; members: string; author: string; sig: string }>('SELECT hash,epoch,parent,members,author,sig FROM checkpoint')) {
       if (!await C.verifyMessage(sigInput.checkpoint(r), r.sig, r.author)) bad.push(`checkpoint ${r.hash}: bad sig`);
       else if (!isAdminAuthor(r.author)) bad.push(`checkpoint ${r.hash}: not admin`);
     }
     if (bad.length) return bad; // don't trust staging's grant state if system rows are tainted
 
-    // 2. DATA rows: sig-valid + author is a writer per STAGING's (now-trusted) grants.
+    // 2. DATA rows: sig-valid + author is a writer per the effective grant state
+    //    = MAIN's grants (already trusted) ∪ STAGING's (admin-verified above). An
+    //    incremental diff carries new cells but not old grants (those are in main).
     for (const r of await staging.all<{ pk: string; resource: string; ct: string; dek_ver: number; author: string; sig: string }>('SELECT pk,resource,ct,dek_ver,author,sig FROM cell')) {
       if (!await C.verifyMessage(sigInput.cell(r), r.sig, r.author)) bad.push(`cell ${r.pk}: bad sig`);
-      else if (!(await writerIn(staging, admin, r.author, r.resource))) bad.push(`cell ${r.pk}: author lacks writer on ${r.resource}`);
+      else if (!(await writerIn(staging, admin, r.author, r.resource)) && !(await writerIn(conn(), admin, r.author, r.resource))) bad.push(`cell ${r.pk}: author lacks writer on ${r.resource}`);
     }
     for (const r of await staging.all<{ rid: string; flag: number; author: string; sig: string }>('SELECT rid,flag,author,sig FROM archived')) {
       if (!await C.verifyMessage(sigInput.archived(r), r.sig, r.author)) bad.push(`archived ${r.rid}: bad sig`);
@@ -452,6 +463,8 @@ export const createCrDevice = (engine: CrEngine, label: string) => {
       if (rejected.length) return { applied: false, rejected, stateRoot: await stateRoot() };
       await conn().applyChangesetSQL(changesetSQL); // carries adminroot (CRR) into main
       dekCache.clear();
+      // snapshot a local watermark for any checkpoints we now hold but hadn't seen
+      for (const { hash } of await conn().all<{ hash: string }>('SELECT hash FROM checkpoint WHERE hash NOT IN (SELECT hash FROM _wm)')) await setWatermark(hash);
       return { applied: true, rejected: [], stateRoot: await stateRoot() }; // for merge-confirm
     } finally {
       await staging.close();
@@ -460,6 +473,67 @@ export const createCrDevice = (engine: CrEngine, label: string) => {
   // Sync helper for tests: pull another device's full state into this one.
   const syncFrom = async (other: { exportChangeset: (s?: number) => Promise<string> }): Promise<ImportResult> =>
     importChangeset(await other.exportChangeset(-1));
+
+  /* ---- wipe-and-rebuild consensus loop (step 4) --------------------------
+   * At a group consensus the coordinator merges everyone's diffs, optionally
+   * rotates DEKs, records a checkpoint, then hands each member a REBUILD SLICE:
+   * a self-contained changeset with the auth/checkpoint state + only the cells
+   * for resources that member may read, MINUS archived records. The member then
+   * wipes their local store and rebuilds from the slice — this is the
+   * compaction + data-minimization + redistribution step. */
+
+  // resources a subject may read (reader or writer, not revoked)
+  const readableBy = async (subjectPub: string): Promise<string[]> =>
+    (await conn().all<{ resource: string }>("SELECT DISTINCT resource FROM grantrec WHERE subject=? AND revoked=0 AND role IN ('reader','writer')", [subjectPub])).map((r) => r.resource);
+
+  // copy full table rows from main → a target conn (preserves author+sig)
+  const copyTable = async (to: Conn, table: string, cols: string[], where = ''): Promise<void> => {
+    const rows = await conn().all<Record<string, SqlValue>>(`SELECT ${cols.join(',')} FROM ${table} ${where}`);
+    const ph = cols.map(() => '?').join(',');
+    for (const r of rows) await to.run(`INSERT OR REPLACE INTO ${table}(${cols.join(',')}) VALUES(${ph})`, cols.map((c) => r[c]));
+  };
+
+  /** Build a member's rebuild slice: auth/checkpoint state + their entitled,
+   *  non-archived cells. Admin only. Returns a changeset the member imports into
+   *  a freshly wiped store. */
+  const rebuildSliceFor = async (subjectPub: string): Promise<string> => {
+    if (!(await isAdmin())) throw new Error('admin only');
+    const readable = await readableBy(subjectPub);
+    const st = await engine.openStaging();
+    try {
+      await initSchema(st);
+      await copyTable(st, 'adminroot', ['k', 'pub']);
+      await copyTable(st, 'identity', ['pub', 'name', 'xpub', 'author', 'sig']);
+      await copyTable(st, 'grantrec', ['pk', 'subject', 'resource', 'role', 'revoked', 'epoch', 'author', 'sig']);
+      await copyTable(st, 'keywrap', ['pk', 'subject', 'resource', 'dek_ver', 'box', 'author', 'sig']);
+      await copyTable(st, 'dekver', ['pk', 'resource', 'ver', 'author', 'sig']);
+      await copyTable(st, 'checkpoint', ['hash', 'epoch', 'parent', 'members', 'author', 'sig']);
+      // entitled, non-archived cells only
+      const inList = readable.length ? readable.map((r) => `'${r.replace(/'/g, "''")}'`).join(',') : "''";
+      await copyTable(st, 'cell', ['pk', 'rid', 'resource', 'col', 'ct', 'dek_ver', 'author', 'sig'],
+        `WHERE resource IN (${inList}) AND rid NOT IN (SELECT rid FROM archived WHERE flag=1)`);
+      return await st.exportChangesetSQL(-1);
+    } finally {
+      await st.close();
+    }
+  };
+
+  /** Coordinator: merge member diffs, optionally rotate all DEKs, record a
+   *  checkpoint. Returns the new checkpoint hash. */
+  const runConsensus = async (diffs: string[], opts: { rotate?: boolean } = {}): Promise<string> => {
+    if (!(await isAdmin())) throw new Error('admin only');
+    for (const d of diffs) await importChangeset(d);
+    if (opts.rotate) await rotateAllDeks();
+    return recordCheckpoint();
+  };
+
+  /** Drop the local store. In :memory: this truly wipes; in the browser the
+   *  IndexedDB persists, so a real wipe also deletes the IDB (engine concern). */
+  const wipe = async (): Promise<void> => {
+    if (state.conn) await state.conn.close();
+    state.conn = null;
+    dekCache.clear();
+  };
 
   const close = async (): Promise<void> => { if (state.conn) await state.conn.close(); };
 
@@ -470,6 +544,7 @@ export const createCrDevice = (engine: CrEngine, label: string) => {
     exportIdentityCard, importIdentityCard, grant, revoke, rotateDek, rotateAllDeks, addNote, writeCell, archiveRecord,
     listNotes, heldResources, consolidate, stateRoot,
     recordCheckpoint, checkpoints, latestCheckpoint, exportSince,
+    rebuildSliceFor, runConsensus, wipe,
     exportChangeset, importChangeset, syncFrom, close,
   };
 };

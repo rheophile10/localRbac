@@ -41,13 +41,6 @@ export const mergeBase = (checkpoints: Checkpoint[], hashA: string, hashB: strin
 export const isDescendant = (checkpoints: Checkpoint[], hash: string, ancestor: string): boolean =>
   chainFrom(checkpoints, hash).includes(ancestor);
 
-/** `(vvA, vvB)` — merge two version vectors (max per site). Pure. */
-export const mergeVV = (a: Record<string, number>, b: Record<string, number>): Record<string, number> => {
-  const out: Record<string, number> = { ...a };
-  for (const s in b) out[s] = Math.max(out[s] ?? -1, b[s]);
-  return out;
-};
-
 /** `(rootA, rootB)` — merge-confirm: two replicas hold the same state iff their
  *  content hashes (state roots) are equal. Pure. */
 export const converged = (rootA: string, rootB: string): boolean => rootA === rootB && rootA.length > 0;
