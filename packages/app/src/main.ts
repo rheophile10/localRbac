@@ -19,7 +19,7 @@ const boot = async (): Promise<void> => {
   // Each frame persists to its own encrypted IndexedDB (named by the label).
   const idbName = 'localrbac-' + (prefill.label || 'device').toLowerCase().replace(/\W+/g, '');
   const engine = await bootBrowserEngine({ wasmBinary, idbName });
-  const device = createCrDevice(engine, prefill.label);
+  const device = createCrDevice(engine, prefill.label, { defaultResource: 'notes' });
   (window as unknown as { __app: typeof device }).__app = device; // test / cross-frame hook
   startApp(device, prefill);
 };

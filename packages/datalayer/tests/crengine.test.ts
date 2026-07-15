@@ -4,6 +4,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { nodeCrEngine } from './helpers/boot-node';
 import { createCrDevice, type CrDevice } from '../src/engine/crengine';
+import { addRecord } from './helpers/records';
 
 let engine: Awaited<ReturnType<typeof nodeCrEngine>>;
 beforeAll(async () => { engine = await nodeCrEngine(); });
@@ -28,8 +29,8 @@ describe('cr-sqlite compartmented-RBAC engine', () => {
     await alice.login('alice');
     const alicePub = await provision(admin, alice, 'reader', 'patient:alice');
 
-    const aliceChart = await admin.addNote('Alice chart', 'BP 120/80', 'patient:alice');
-    await admin.addNote('Bob chart', 'BP 140/90', 'patient:bob');
+    const aliceChart = await addRecord(admin, 'Alice chart', 'BP 120/80', 'patient:alice');
+    await addRecord(admin, 'Bob chart', 'BP 140/90', 'patient:bob');
 
     // alice syncs admin's state → gets her grant + keywrap + the encrypted notes.
     // Her grant is on 'patient:alice' (not the default 'notes'), so myRole (which
@@ -38,9 +39,9 @@ describe('cr-sqlite compartmented-RBAC engine', () => {
     expect(alice.session!.edPub).toBe(alicePub);
 
     // alice sees her chart decrypted; bob's is locked (not in her readable set)
-    const notes = await alice.listNotes();
-    expect(notes.find((n) => n.id === aliceChart)?.body).toBe('BP 120/80');
-    expect(notes.every((n) => n.body !== 'BP 140/90')).toBe(true);
+    const notes = await alice.listRecords();
+    expect(notes.find((n) => n.id === aliceChart)?.cols.body).toBe('BP 120/80');
+    expect(notes.every((n) => n.cols.body !== 'BP 140/90')).toBe(true);
     expect(await alice.heldResources()).toContain('patient:alice');
     expect(await alice.heldResources()).not.toContain('patient:bob');
 
@@ -66,16 +67,16 @@ describe('cr-sqlite compartmented-RBAC engine', () => {
 
     await wanda.syncFrom(admin);
     expect(await wanda.myRole()).toBe('writer');
-    const nid = await wanda.addNote('Field note', 'the eagle has landed');
+    const nid = await addRecord(wanda, 'Field note', 'the eagle has landed');
 
     // admin imports wanda's change → converges, decrypts
     expect((await admin.syncFrom(wanda)).applied).toBe(true);
-    expect((await admin.listNotes()).find((n) => n.id === nid)?.body).toBe('the eagle has landed');
+    expect((await admin.listRecords()).find((n) => n.id === nid)?.cols.body).toBe('the eagle has landed');
 
     // reader rick cannot write
     await rick.syncFrom(admin);
     expect(await rick.myRole()).toBe('reader');
-    await expect(rick.addNote('nope', 'denied')).rejects.toThrow(/DENIED/);
+    await expect(addRecord(rick, 'nope', 'denied')).rejects.toThrow(/DENIED/);
 
     await admin.close(); await wanda.close(); await rick.close();
   });
@@ -89,7 +90,7 @@ describe('cr-sqlite compartmented-RBAC engine', () => {
     const mallory = dev('mallory');
     await mallory.login('mallory');
     await mallory.genesis(); // mallory is admin of HER OWN db
-    await mallory.addNote('forged', 'nope');
+    await addRecord(mallory, 'forged', 'nope');
     const forged = await mallory.exportChangeset(-1);
 
     const bob = dev('bob');
@@ -107,17 +108,19 @@ describe('cr-sqlite compartmented-RBAC engine', () => {
     const admin = dev('admin');
     await admin.login('admin');
     await admin.genesis();
-    await admin.addNote('n1', 'one');
+    await addRecord(admin, 'n1', 'one');
     const cs = await admin.exportChangeset(-1);
 
     const q = dev('q');
     await q.login('q-observer');
     expect((await q.importChangeset(cs)).applied).toBe(true);
     expect((await q.importChangeset(cs)).applied).toBe(true); // twice = idempotent
-    // q is not admin/granted → the note exists but its body is locked (no DEK)
-    const notes = await q.listNotes();
+    // q is not admin/granted → the record exists but no columns are readable
+    // (locked cells decrypt to nothing → an empty cols map)
+    const notes = await q.listRecords();
     expect(notes).toHaveLength(1);
-    expect(notes[0].body).toBeNull();
+    expect(notes[0].cols.body).toBeUndefined();
+    expect(Object.keys(notes[0].cols)).toHaveLength(0);
 
     await admin.close(); await q.close();
   });

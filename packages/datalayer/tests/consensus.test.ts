@@ -3,6 +3,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { nodeCrEngine } from './helpers/boot-node';
 import { createCrDevice, type CrDevice } from '../src/engine/crengine';
+import { addRecord } from './helpers/records';
 import * as consensus from '../src/consensus';
 
 let engine: Awaited<ReturnType<typeof nodeCrEngine>>;
@@ -43,13 +44,13 @@ describe('cr-engine checkpoints + diff-since-checkpoint', () => {
     await alice.syncFrom(admin);
 
     // checkpoint c1 over the initial state
-    await admin.addNote('note-A', 'first');
+    await addRecord(admin, 'note-A', 'first');
     const c1 = await admin.recordCheckpoint();
     expect(await admin.latestCheckpoint()).toBe(c1);
     expect((await admin.checkpoints()).map((c) => c.epoch)).toContain(0);
 
     // more ops AFTER c1
-    await admin.addNote('note-B', 'second');
+    await addRecord(admin, 'note-B', 'second');
 
     // exportSince(c1) carries only the post-c1 ops; a fresh reader converges
     const diff = await admin.exportSince(c1);
@@ -57,11 +58,11 @@ describe('cr-engine checkpoints + diff-since-checkpoint', () => {
     expect(diff.length).toBeLessThan((await admin.exportChangeset(-1)).length); // smaller than full
 
     // alice already had the c1 state; applying the diff brings her note-B
-    const before = (await alice.listNotes()).length;
+    const before = (await alice.listRecords()).length;
     await alice.importChangeset(diff);
-    const after = await alice.listNotes();
+    const after = await alice.listRecords();
     expect(after.length).toBeGreaterThanOrEqual(before);
-    expect(after.some((n) => n.body === 'second')).toBe(true);
+    expect(after.some((n) => n.cols.body === 'second')).toBe(true);
 
     // the checkpoint chain travels: alice sees c1 after a full sync
     await alice.syncFrom(admin);
@@ -86,8 +87,8 @@ describe('cr-engine checkpoints + diff-since-checkpoint', () => {
     await wanda.syncFrom(admin);
 
     // both write concurrently → diverged
-    await admin.addNote('a', 'from admin');
-    await wanda.addNote('w', 'from wanda');
+    await addRecord(admin, 'a', 'from admin');
+    await addRecord(wanda, 'w', 'from wanda');
     expect(consensus.converged(await admin.stateRoot(), await wanda.stateRoot())).toBe(false);
 
     // one-way push isn't enough; bidirectional sync converges

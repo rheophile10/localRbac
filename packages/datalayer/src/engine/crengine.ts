@@ -25,8 +25,13 @@ import type { ConsolidatedRecord } from '../ceremony';
 import type { Identity, Role } from '../types';
 
 const SEP = '\x1f';
-const DEFAULT = 'notes';
+const REC = 'rec'; // internal namespace for the (single, generic) record store
 const j = (...parts: (string | number)[]): string => parts.join(SEP);
+
+export interface CrDeviceOptions {
+  /** Default resource/compartment when a call omits one (demo sets 'notes'). */
+  defaultResource?: string;
+}
 
 export interface CrEngine {
   // main DB: encrypted IndexedDB in the browser (keyed to the session), or
@@ -38,6 +43,11 @@ export interface CrEngine {
 export interface ImportResult { applied: boolean; rejected: string[]; stateRoot: string; }
 export type CrDevice = ReturnType<typeof createCrDevice>;
 
+// The ESSENTIAL core schema — every implementation needs exactly these tables.
+// Records are stored GENERICALLY: `cell` is an entity-attribute-value store
+// (rid × col → encrypted value) under a `resource`; there is NO per-record-type
+// table. "Notes" (title/body columns under the 'notes' resource) is a demo
+// convention layered on top (see packages/app/src/notes.ts), not core schema.
 const SCHEMA = `
   CREATE TABLE adminroot(k TEXT NOT NULL PRIMARY KEY, pub TEXT);
   CREATE TABLE dekver(pk TEXT NOT NULL PRIMARY KEY, resource TEXT, ver INTEGER, author TEXT, sig TEXT);
@@ -73,7 +83,8 @@ const sigInput = {
 // admin can grant to their key without ever seeing private material.
 export interface IdentityCard { pub: string; name: string; xpub: string; sig: string; }
 
-export const createCrDevice = (engine: CrEngine, label: string) => {
+export const createCrDevice = (engine: CrEngine, label: string, opts: CrDeviceOptions = {}) => {
+  const DEFAULT = opts.defaultResource ?? 'default'; // core is resource-agnostic
   const state: { conn: Conn | null; session: Identity | null } = { conn: null, session: null };
   const dekCache = new Map<string, Uint8Array | null>();
 
@@ -197,10 +208,11 @@ export const createCrDevice = (engine: CrEngine, label: string) => {
   };
 
   /* ---- admin ops ---------------------------------------------------------*/
-  const knownUsers = async (): Promise<Array<{ pub: string; name: string; xpub: string; role: Role }>> => {
+  // Users and their role ON A RESOURCE (defaults to the device's default resource).
+  const knownUsers = async (resource = DEFAULT): Promise<Array<{ pub: string; name: string; xpub: string; role: Role }>> => {
     const rows = await conn().all<{ pub: string; name: string; xpub: string; role: string | null; revoked: number | null }>(
       `SELECT i.pub,i.name,i.xpub,g.role,g.revoked FROM identity i
-       LEFT JOIN grantrec g ON g.subject=i.pub AND g.resource='notes'`);
+       LEFT JOIN grantrec g ON g.subject=i.pub AND g.resource=?`, [resource]);
     return rows.map((r) => ({ pub: r.pub, name: r.name, xpub: r.xpub, role: (r.revoked ? 'none' : (r.role as Role) || 'none') as Role }));
   };
 
@@ -282,11 +294,15 @@ export const createCrDevice = (engine: CrEngine, label: string) => {
     if (!dek) throw new Error('no data-key to encrypt with');
     await putCell(rid, resource, col, await C.aeadEncrypt(dek, plaintext), ver);
   };
-  const addNote = async (title: string, body: string, resource = DEFAULT): Promise<string> => {
+  // Write a new record (a map of column → value) under a resource; returns rid.
+  const putRecord = async (cols: Record<string, string>, resource = DEFAULT): Promise<string> => {
     const id = crypto.randomUUID();
-    await writeCell(id, 'title', title, resource);
-    await writeCell(id, 'body', body, resource);
+    for (const [col, value] of Object.entries(cols)) await writeCell(id, col, value, resource);
     return id;
+  };
+  // Update columns of an existing record.
+  const editRecord = async (rid: string, cols: Record<string, string>, resource = DEFAULT): Promise<void> => {
+    for (const [col, value] of Object.entries(cols)) await writeCell(rid, col, value, resource);
   };
   const archiveRecord = async (rid: string, flag = true): Promise<void> => {
     // writer on any resource the record is in
@@ -305,27 +321,33 @@ export const createCrDevice = (engine: CrEngine, label: string) => {
     for (const r of rows) {
       const dek = await getDEK(r.resource, r.dek_ver);
       if (!dek) continue;
-      try { out.push({ tbl: 'notes', rowId: r.rid, col: r.col, resource: r.resource, hlc: j(r.dek_ver, r.resource), value: await C.aeadDecrypt(dek, r.ct) }); } catch { /* skip */ }
+      try { out.push({ tbl: REC, rowId: r.rid, col: r.col, resource: r.resource, hlc: j(r.dek_ver, r.resource), value: await C.aeadDecrypt(dek, r.ct) }); } catch { /* skip */ }
     }
     return out;
   };
   const isArchived = async (rid: string): Promise<boolean> => Number(await conn().scalar<number>('SELECT flag FROM archived WHERE rid=?', [rid]) ?? 0) === 1;
 
-  const listNotes = async (): Promise<Array<{ id: string; title: string | null; body: string | null }>> => {
+  // List records the viewer can see (decrypted, LWW-folded), as { id, cols }.
+  // Optionally filtered to a resource; archived records are excluded.
+  const listRecords = async (resource?: string): Promise<Array<{ id: string; cols: Record<string, string | null> }>> => {
     const records = compartment.foldRecords(await decryptedCells());
-    const ridsRows = await conn().all<{ rid: string }>('SELECT DISTINCT rid FROM cell ORDER BY rid');
-    const out: Array<{ id: string; title: string | null; body: string | null }> = [];
+    const ridsRows = resource
+      ? await conn().all<{ rid: string }>('SELECT DISTINCT rid FROM cell WHERE resource=? ORDER BY rid', [resource])
+      : await conn().all<{ rid: string }>('SELECT DISTINCT rid FROM cell ORDER BY rid');
+    const out: Array<{ id: string; cols: Record<string, string | null> }> = [];
     for (const { rid } of ridsRows) {
       if (await isArchived(rid)) continue;
-      const rec = records.get(compartment.recordKey('notes', rid));
-      out.push({ id: rid, title: rec?.get('title') ?? null, body: rec?.get('body') ?? null });
+      const rec = records.get(compartment.recordKey(REC, rid));
+      const cols: Record<string, string | null> = {};
+      if (rec) for (const [k, v] of rec) cols[k] = v;
+      out.push({ id: rid, cols });
     }
     return out;
   };
-  const myRole = async (): Promise<Role | null> => {
+  const myRole = async (resource = DEFAULT): Promise<Role | null> => {
     if (!state.session || !state.conn) return null;
     if (state.session.edPub === (await adminPub())) return 'admin';
-    const u = (await knownUsers()).find((x) => x.pub === state.session!.edPub);
+    const u = (await knownUsers(resource)).find((x) => x.pub === state.session!.edPub);
     return u ? u.role : 'none';
   };
   const heldResources = async (): Promise<string[]> => {
@@ -339,11 +361,11 @@ export const createCrDevice = (engine: CrEngine, label: string) => {
     const rids = (await conn().all<{ rid: string }>('SELECT DISTINCT rid FROM cell ORDER BY rid')).map((r) => r.rid);
     const out: ConsolidatedRecord[] = [];
     for (const rid of rids) {
-      const rec = records.get(compartment.recordKey('notes', rid));
+      const rec = records.get(compartment.recordKey(REC, rid));
       const cols: Record<string, string | null> = {};
       if (rec) for (const [k, v] of rec) cols[k] = v;
       const resources = (await conn().all<{ resource: string }>('SELECT DISTINCT resource FROM cell WHERE rid=?', [rid])).map((r) => r.resource);
-      out.push({ tbl: 'notes', rowId: rid, cols, resources, archived: await isArchived(rid) });
+      out.push({ tbl: REC, rowId: rid, cols, resources, archived: await isArchived(rid) });
     }
     return out;
   };
@@ -541,8 +563,8 @@ export const createCrDevice = (engine: CrEngine, label: string) => {
     label,
     get session() { return state.session; },
     login, unlock, exportKeystore, logout, genesis, isAdmin, adminPub, myRole, knownUsers,
-    exportIdentityCard, importIdentityCard, grant, revoke, rotateDek, rotateAllDeks, addNote, writeCell, archiveRecord,
-    listNotes, heldResources, consolidate, stateRoot,
+    exportIdentityCard, importIdentityCard, grant, revoke, rotateDek, rotateAllDeks,
+    putRecord, editRecord, writeCell, archiveRecord, listRecords, heldResources, consolidate, stateRoot,
     recordCheckpoint, checkpoints, latestCheckpoint, exportSince,
     rebuildSliceFor, runConsensus, wipe,
     exportChangeset, importChangeset, syncFrom, close,

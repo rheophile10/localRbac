@@ -4,6 +4,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { nodeCrEngine } from './helpers/boot-node';
 import { createCrDevice, type CrDevice } from '../src/engine/crengine';
+import { addRecord } from './helpers/records';
 
 let engine: Awaited<ReturnType<typeof nodeCrEngine>>;
 beforeAll(async () => { engine = await nodeCrEngine(); });
@@ -12,8 +13,8 @@ const provision = async (admin: CrDevice, user: CrDevice, role: 'reader' | 'writ
   await admin.importIdentityCard(await user.exportIdentityCard());
   await admin.grant(user.session!.edPub, role);
 };
-const bodyOf = async (d: CrDevice, id: string): Promise<string | null | undefined> =>
-  (await d.listNotes()).find((n) => n.id === id)?.body;
+const bodyOf = async (d: CrDevice, id: string): Promise<string | null> =>
+  ((await d.listRecords()).find((n) => n.id === id)?.cols.body) ?? null; // locked/absent → null
 
 describe('DEK rotation (optional) + revocation', () => {
   it('RT-REVOKE: revoke WITH rotation → old readable, new locked to the revoked user', async () => {
@@ -22,13 +23,13 @@ describe('DEK rotation (optional) + revocation', () => {
     await provision(admin, alice, 'reader');
     await alice.syncFrom(admin);
 
-    const oldNote = await admin.addNote('old', 'before revoke');
+    const oldNote = await addRecord(admin, 'old', 'before revoke');
     await alice.syncFrom(admin);
     expect(await bodyOf(alice, oldNote)).toBe('before revoke'); // reader can read
 
     // revoke alice (rotate=true by default) → DEK bumps, not re-sealed to her
-    await admin.revoke(alice.session!.edPub); // resource defaults to 'notes'
-    const newNote = await admin.addNote('new', 'after revoke');
+    await admin.revoke(alice.session!.edPub); // resource defaults to 'default'
+    const newNote = await addRecord(admin, 'new', 'after revoke');
     await alice.syncFrom(admin);
 
     expect(await bodyOf(alice, oldNote)).toBe('before revoke'); // still has old key
@@ -42,8 +43,8 @@ describe('DEK rotation (optional) + revocation', () => {
     await provision(admin, bob, 'reader');
     await bob.syncFrom(admin);
 
-    await admin.revoke(bob.session!.edPub, 'notes', false); // no rotation
-    const n = await admin.addNote('n', 'still visible');
+    await admin.revoke(bob.session!.edPub, 'default', false); // no rotation
+    const n = await addRecord(admin, 'n', 'still visible');
     await bob.syncFrom(admin);
     expect(await bodyOf(bob, n)).toBe('still visible'); // same DEK version → still readable
     await admin.close(); await bob.close();
@@ -55,21 +56,21 @@ describe('DEK rotation (optional) + revocation', () => {
     await provision(admin, wanda, 'writer');
     await wanda.syncFrom(admin);
 
-    const before = await admin.addNote('b', 'v1');
-    await admin.rotateDek('notes'); // consensus-style rotation, re-seals to wanda
-    const after = await admin.addNote('a', 'v2');
+    const before = await addRecord(admin, 'b', 'v1');
+    await admin.rotateDek('default'); // consensus-style rotation, re-seals to wanda
+    const after = await addRecord(admin, 'a', 'v2');
     await wanda.syncFrom(admin);
     // wanda is still a member → gets the new keywrap → reads both
     expect(await bodyOf(wanda, before)).toBe('v1');
     expect(await bodyOf(wanda, after)).toBe('v2');
 
     await admin.rotateAllDeks(); // no throw; rotates every resource
-    const third = await admin.addNote('c', 'v3');
+    const third = await addRecord(admin, 'c', 'v3');
     await wanda.syncFrom(admin);
     expect(await bodyOf(wanda, third)).toBe('v3');
 
     // a non-admin cannot rotate
-    await expect(wanda.rotateDek('notes')).rejects.toThrow(/admin only/);
+    await expect(wanda.rotateDek('default')).rejects.toThrow(/admin only/);
     await admin.close(); await wanda.close();
   });
 });

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { nodeCrEngine } from './helpers/boot-node';
 import { createCrDevice } from '../src/engine/crengine';
+import { addRecord } from './helpers/records';
 import * as C from '../src/crypto';
 import { sealVault, readVaultInfo, contributeShare, openVault, quorumFor, type ContributedShare } from '../src/vault';
 import type { Identity } from '../src/types';
@@ -20,7 +21,7 @@ describe('threshold-custody vault (seal / unlock ceremony)', () => {
     const admin = createCrDevice(engine, 'admin');
     await admin.login('admin');
     await admin.genesis();
-    await admin.addNote('Top secret', 'the eagle lands at dawn');
+    await addRecord(admin, 'Top secret', 'the eagle lands at dawn');
     const payload = C.utf8(await admin.exportChangeset(-1));
     expect(payload.length).toBeGreaterThan(100);
 
@@ -43,7 +44,7 @@ describe('threshold-custody vault (seal / unlock ceremony)', () => {
     const admin = createCrDevice(engine, 'admin');
     await admin.login('admin');
     await admin.genesis();
-    await admin.addNote('shared', 'for bob only');
+    await addRecord(admin, 'shared', 'for bob only');
     const changeset = await admin.exportChangeset(-1);
 
     const bob = await C.createIdentity('bob');

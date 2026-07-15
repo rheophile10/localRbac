@@ -3,6 +3,7 @@
  * state and awaits device calls. Tagged data-testid for the Playwright e2e. */
 import type { CrDevice } from '@localrbac/datalayer';
 import { short } from '@localrbac/datalayer';
+import { addNote, listNotes, seedNotes } from './notes';
 
 type ElProps = Record<string, string | EventListener>;
 type ElChild = Node | string;
@@ -137,7 +138,7 @@ export const startApp = (dev: CrDevice, prefill: { label: string; user: string; 
         class: 'primary', ...tid('note-add'),
         onclick: async () => {
           if (!t.value.trim()) return;
-          try { await dev.addNote(t.value.trim(), b.value.trim()); t.value = ''; b.value = ''; await render(); }
+          try { await addNote(dev, t.value.trim(), b.value.trim()); t.value = ''; b.value = ''; await render(); }
           catch (err) { toast((err as Error).message, true); }
         },
       }, 'Add'));
@@ -146,7 +147,7 @@ export const startApp = (dev: CrDevice, prefill: { label: string; user: string; 
       p.append(el('div', { class: 'hint' }, role === 'none' ? 'read-only view — writing is denied' : 'you may read but not write'));
     }
     const list = el('div', tid('note-list'));
-    const notes = await dev.listNotes();
+    const notes = await listNotes(dev);
     if (!notes.length) list.append(el('div', { class: 'empty' }, 'no records'));
     notes.forEach((n) => {
       const locked = n.title === null && n.body === null;
@@ -248,7 +249,7 @@ export const startApp = (dev: CrDevice, prefill: { label: string; user: string; 
     }, 'Re-key keystore'));
     if (!hasDb) bar.append(el('button', {
       class: 'primary', ...tid('genesis'),
-      onclick: async () => { await dev.genesis(); toast('genesis db created (you are admin)'); await render(); },
+      onclick: async () => { await dev.genesis(); await seedNotes(dev); toast('genesis db created (you are admin)'); await render(); },
     }, 'Create genesis DB'));
     root.append(bar, cardOut);
 

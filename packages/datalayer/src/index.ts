@@ -6,7 +6,7 @@ export { short } from './crypto';
 
 // cr-sqlite engine (the current engine): compartmented RBAC on a CRDT extension.
 export { createCrDevice } from './engine/crengine';
-export type { CrEngine, CrDevice, IdentityCard, ImportResult as CrImportResult } from './engine/crengine';
+export type { CrEngine, CrDevice, CrDeviceOptions, IdentityCard, ImportResult as CrImportResult } from './engine/crengine';
 export { bootBrowserEngine } from './engine/boot-browser';
 export type { BrowserEngineOptions } from './engine/boot-browser';
 export { Conn, createEngine } from './engine/sqlite';

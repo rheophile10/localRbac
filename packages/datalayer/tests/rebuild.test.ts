@@ -5,6 +5,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { nodeCrEngine } from './helpers/boot-node';
 import { createCrDevice, type CrDevice } from '../src/engine/crengine';
+import { addRecord } from './helpers/records';
 
 let engine: Awaited<ReturnType<typeof nodeCrEngine>>;
 beforeAll(async () => { engine = await nodeCrEngine(); });
@@ -13,7 +14,7 @@ const provision = async (admin: CrDevice, user: CrDevice, role: 'reader' | 'writ
   await admin.importIdentityCard(await user.exportIdentityCard());
   await admin.grant(user.session!.edPub, role, resource);
 };
-const bodies = async (d: CrDevice): Promise<(string | null)[]> => (await d.listNotes()).map((n) => n.body);
+const bodies = async (d: CrDevice): Promise<(string | null)[]> => (await d.listRecords()).map((n) => n.cols.body);
 
 describe('wipe-and-rebuild consensus loop', () => {
   it('a member rebuilds from a slice of only their entitled, non-archived records', async () => {
@@ -23,9 +24,9 @@ describe('wipe-and-rebuild consensus loop', () => {
     await alice.syncFrom(admin);
 
     // records across two compartments + one archived
-    await admin.addNote('AliceActive', 'a-live', 'patient:alice');
-    const old = await admin.addNote('AliceOld', 'a-old', 'patient:alice');
-    await admin.addNote('BobActive', 'b-live', 'patient:bob');
+    await addRecord(admin, 'AliceActive', 'a-live', 'patient:alice');
+    const old = await addRecord(admin, 'AliceOld', 'a-old', 'patient:alice');
+    await addRecord(admin, 'BobActive', 'b-live', 'patient:bob');
     await admin.archiveRecord(old, true);
 
     // consensus: (no member diffs here) rotate + checkpoint
@@ -40,13 +41,13 @@ describe('wipe-and-rebuild consensus loop', () => {
     const res = await alice.importChangeset(slice);
     expect(res.applied).toBe(true);
 
-    const notes = await alice.listNotes();
-    const titles = notes.map((n) => n.body);
+    const notes = await alice.listRecords();
+    const titles = notes.map((n) => n.cols.body);
     expect(titles).toContain('a-live');       // her active record, readable
     expect(titles).not.toContain('a-old');    // archived → excluded from the slice
     expect(titles).not.toContain('b-live');   // bob's compartment → not in her slice
     // and she can actually decrypt her record (rotation re-sealed her key)
-    expect(notes.find((n) => n.body === 'a-live')?.body).toBe('a-live');
+    expect(notes.find((n) => n.cols.body === 'a-live')?.cols.body).toBe('a-live');
 
     await admin.close(); await alice.close();
   });
@@ -60,7 +61,7 @@ describe('wipe-and-rebuild consensus loop', () => {
     // baseline checkpoint, then wanda writes since it
     const c0 = await admin.recordCheckpoint();
     await wanda.syncFrom(admin); // wanda gets c0
-    await wanda.addNote('field', 'wanda was here');
+    await addRecord(wanda, 'field', 'wanda was here');
 
     // wanda exports her diff since c0; coordinator runs consensus with it
     const diff = await wanda.exportSince(c0);
