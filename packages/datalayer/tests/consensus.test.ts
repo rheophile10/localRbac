@@ -78,4 +78,26 @@ describe('cr-engine checkpoints + diff-since-checkpoint', () => {
     await expect(bob.recordCheckpoint()).rejects.toThrow(/admin only/);
     await admin.close(); await bob.close();
   });
+
+  it('merge-confirm: import returns a state root; bidirectional sync converges', async () => {
+    const admin = dev('admin'); await admin.login('admin'); await admin.genesis();
+    const wanda = dev('wanda'); await wanda.login('wanda');
+    await provision(admin, wanda, 'writer');
+    await wanda.syncFrom(admin);
+
+    // both write concurrently → diverged
+    await admin.addNote('a', 'from admin');
+    await wanda.addNote('w', 'from wanda');
+    expect(consensus.converged(await admin.stateRoot(), await wanda.stateRoot())).toBe(false);
+
+    // one-way push isn't enough; bidirectional sync converges
+    const r1 = await admin.syncFrom(wanda); // admin pulls wanda
+    const r2 = await wanda.syncFrom(admin); // wanda pulls admin
+    expect(r1.applied && r2.applied).toBe(true);
+
+    const [ra, rw] = [await admin.stateRoot(), await wanda.stateRoot()];
+    expect(consensus.converged(ra, rw)).toBe(true);   // merge-confirmed
+    expect(r2.stateRoot).toBe(ra);                     // the returned root matches
+    await admin.close(); await wanda.close();
+  });
 });

@@ -15,6 +15,9 @@
         "description": "(checkpoints, hash, ancestor) — true iff `ancestor` is on the chain from `hash`." } },
     { "key": "consensus.mergeVV", "celType": "LockedLambdaCel", "locked": true,
       "metadata": { "key": "consensus.mergeVV", "segment": "consensus", "name": "consensus.mergeVV", "kind": "native",
-        "description": "(vvA, vvB) — merge two version vectors, taking the max db_version per site." } }
+        "description": "(vvA, vvB) — merge two version vectors, taking the max db_version per site." } },
+    { "key": "consensus.converged", "celType": "LockedLambdaCel", "locked": true,
+      "metadata": { "key": "consensus.converged", "segment": "consensus", "name": "consensus.converged", "kind": "native",
+        "description": "(rootA, rootB) — merge-confirm: true iff two replicas' state-root hashes are equal and non-empty." } }
   ]
 }

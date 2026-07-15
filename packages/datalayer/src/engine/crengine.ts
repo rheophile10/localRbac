@@ -35,7 +35,7 @@ export interface CrEngine {
   openStaging: () => Promise<Conn>;
 }
 
-export interface ImportResult { applied: boolean; rejected: string[]; }
+export interface ImportResult { applied: boolean; rejected: string[]; stateRoot: string; }
 export type CrDevice = ReturnType<typeof createCrDevice>;
 
 const SCHEMA = `
@@ -410,9 +410,8 @@ export const createCrDevice = (engine: CrEngine, label: string) => {
   };
 
   const importChangeset = async (changesetSQL: string): Promise<ImportResult> => {
-    if (!changesetSQL.trim()) return { applied: true, rejected: [] };
+    if (!changesetSQL.trim()) return { applied: true, rejected: [], stateRoot: await stateRoot() };
     if (!state.conn) { state.conn = await engine.openMain(await vfsKey()); await initSchema(state.conn); }
-    // adopt admin root TOFU from the incoming set if we have none
     // Authorize against a throwaway staging conn that holds only the asserted
     // rows (readable). adminroot is a CRR, so it travels and TOFU works here.
     const staging = await engine.openStaging();
@@ -420,10 +419,10 @@ export const createCrDevice = (engine: CrEngine, label: string) => {
       await initSchema(staging);
       await staging.applyChangesetSQL(changesetSQL);
       const rejected = await authorizeStaging(staging);
-      if (rejected.length) return { applied: false, rejected };
+      if (rejected.length) return { applied: false, rejected, stateRoot: await stateRoot() };
       await conn().applyChangesetSQL(changesetSQL); // carries adminroot (CRR) into main
       dekCache.clear();
-      return { applied: true, rejected: [] };
+      return { applied: true, rejected: [], stateRoot: await stateRoot() }; // for merge-confirm
     } finally {
       await staging.close();
     }
