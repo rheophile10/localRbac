@@ -1,0 +1,77 @@
+{
+  "name": "compartment",
+  "cels": [
+    {
+      "key": "compartment.recordKey",
+      "celType": "LockedLambdaCel",
+      "metadata": {
+        "key": "compartment.recordKey",
+        "segment": "compartment",
+        "name": "compartment.recordKey",
+        "kind": "native",
+        "description": "(tbl, rowId) — the stable string key foldRecords uses to identify a record."
+      },
+      "locked": true
+    },
+    {
+      "key": "compartment.foldRecords",
+      "celType": "LockedLambdaCel",
+      "metadata": {
+        "key": "compartment.foldRecords",
+        "segment": "compartment",
+        "name": "compartment.foldRecords",
+        "kind": "native",
+        "description": "(cells) — LWW fold of decrypted cell-writes: highest-hlc write wins per (tbl,rowId,col), merging across resource-versions; returns records."
+      },
+      "locked": true
+    },
+    {
+      "key": "compartment.recordResources",
+      "celType": "LockedLambdaCel",
+      "metadata": {
+        "key": "compartment.recordResources",
+        "segment": "compartment",
+        "name": "compartment.recordResources",
+        "kind": "native",
+        "description": "(tags, tbl, rowId) — the sorted set of resources a record is tagged to in the index."
+      },
+      "locked": true
+    },
+    {
+      "key": "compartment.visibleRecords",
+      "celType": "LockedLambdaCel",
+      "metadata": {
+        "key": "compartment.visibleRecords",
+        "segment": "compartment",
+        "name": "compartment.visibleRecords",
+        "kind": "native",
+        "description": "(tags, held) — records visible to a holder of `held` resources: those tagged to at least one held resource."
+      },
+      "locked": true
+    },
+    {
+      "key": "compartment.canConsolidate",
+      "celType": "LockedLambdaCel",
+      "metadata": {
+        "key": "compartment.canConsolidate",
+        "segment": "compartment",
+        "name": "compartment.canConsolidate",
+        "kind": "native",
+        "description": "(tags, held) — true iff every tagged resource is held; the gate that lets a locker consolidate only what it can decrypt."
+      },
+      "locked": true
+    },
+    {
+      "key": "compartment.resourcesOf",
+      "celType": "LockedLambdaCel",
+      "metadata": {
+        "key": "compartment.resourcesOf",
+        "segment": "compartment",
+        "name": "compartment.resourcesOf",
+        "kind": "native",
+        "description": "(tags) — the distinct resources referenced by a tag set."
+      },
+      "locked": true
+    }
+  ]
+}

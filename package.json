@@ -1,0 +1,21 @@
+{
+  "name": "localrbac",
+  "version": "0.4.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/datalayer",
+    "packages/app"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w @localrbac/app",
+    "build": "npm run build -w @localrbac/app",
+    "preview": "npm run preview -w @localrbac/app",
+    "typecheck": "npm run typecheck -w @localrbac/datalayer && npm run typecheck -w @localrbac/app",
+    "test:unit": "npm run test -w @localrbac/datalayer",
+    "test:e2e": "npm run build -w @localrbac/app && npm run test:e2e -w @localrbac/app",
+    "test": "npm run typecheck && npm run test:unit && npm run test:e2e",
+    "shots": "npm run shots -w @localrbac/app",
+    "record": "npm run record -w @localrbac/app"
+  }
+}

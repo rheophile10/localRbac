@@ -1,0 +1,33 @@
+{
+  "name": "ceremony",
+  "note": "Pure verbs are lockedlambda-ready; effectful orchestration (marked kind:effect) seals/encrypts and uses randomness — it must resolve at the effect site when lifted into plastron.",
+  "cels": [
+    { "key": "ceremony.partition", "celType": "LockedLambdaCel", "locked": true,
+      "metadata": { "key": "ceremony.partition", "segment": "ceremony", "name": "ceremony.partition", "kind": "native",
+        "description": "(records) — split consolidated records into { active, archived } by the archived flag." } },
+    { "key": "ceremony.sliceForResources", "celType": "LockedLambdaCel", "locked": true,
+      "metadata": { "key": "ceremony.sliceForResources", "segment": "ceremony", "name": "ceremony.sliceForResources", "kind": "native",
+        "description": "(records, readable) — records tagged to at least one readable resource; a user's RBAC slice." } },
+    { "key": "ceremony.resourcesIn", "celType": "LockedLambdaCel", "locked": true,
+      "metadata": { "key": "ceremony.resourcesIn", "segment": "ceremony", "name": "ceremony.resourcesIn", "kind": "native",
+        "description": "(records) — the sorted set of distinct resources referenced by a record set." } },
+    { "key": "ceremony.serialize", "celType": "LockedLambdaCel", "locked": true,
+      "metadata": { "key": "ceremony.serialize", "segment": "ceremony", "name": "ceremony.serialize", "kind": "native",
+        "description": "(records) — deterministic canonical bytes of a record set (sorted), reproducible and hashable." } },
+    { "key": "ceremony.deserialize", "celType": "LockedLambdaCel", "locked": true,
+      "metadata": { "key": "ceremony.deserialize", "segment": "ceremony", "name": "ceremony.deserialize", "kind": "native",
+        "description": "(bytes) — inverse of ceremony.serialize." } },
+    { "key": "ceremony.lock", "celType": "LockedLambdaCel", "locked": true,
+      "metadata": { "key": "ceremony.lock", "segment": "ceremony", "name": "ceremony.lock", "kind": "effect",
+        "description": "(input) — close-out lock: refuses without archive+backup keys or if missing any resource DEK; emits active vault (k-of-n) + archive + backup." } },
+    { "key": "ceremony.openArchive", "celType": "LockedLambdaCel", "locked": true,
+      "metadata": { "key": "ceremony.openArchive", "segment": "ceremony", "name": "ceremony.openArchive", "kind": "effect",
+        "description": "(archiveSealed, archivist) — open the archive dump; only the archival private key works." } },
+    { "key": "ceremony.distribute", "celType": "LockedLambdaCel", "locked": true,
+      "metadata": { "key": "ceremony.distribute", "segment": "ceremony", "name": "ceremony.distribute", "kind": "effect",
+        "description": "(records, recipients) — per-recipient RBAC slice sealed to each recipient's key." } },
+    { "key": "ceremony.openSlice", "celType": "LockedLambdaCel", "locked": true,
+      "metadata": { "key": "ceremony.openSlice", "segment": "ceremony", "name": "ceremony.openSlice", "kind": "effect",
+        "description": "(sealed, recipient) — a recipient opens their distributed slice with their key." } }
+  ]
+}
