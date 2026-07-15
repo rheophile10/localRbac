@@ -214,22 +214,52 @@ export const createCrDevice = (engine: CrEngine, label: string) => {
     const dek = await C.deriveResourceDEK(session().edPriv, resource, ver); // admin derives
     await putKeywrap(subjectPub, resource, ver, await C.sealTo(xpub, dek));
   };
+  // current reader/writer subjects on a resource (per-resource, not notes-scoped)
+  const membersOf = async (resource: string): Promise<string[]> =>
+    (await conn().all<{ subject: string }>("SELECT subject FROM grantrec WHERE resource=? AND revoked=0 AND role IN ('reader','writer')", [resource])).map((r) => r.subject);
+
+  // Bump a resource's DEK version and re-seal the new key to its current members
+  // (except `exclude`). The shared rotation primitive. Returns the new version.
+  const rotateResource = async (resource: string, exclude?: string): Promise<number> => {
+    const nv = (await dekVerFor(resource)) + 1;
+    await putDekver(resource, nv);
+    const admin = await adminPub();
+    for (const pub of await membersOf(resource)) {
+      if (pub === exclude || pub === admin) continue;
+      await wrapDekTo(pub, resource, nv);
+    }
+    dekCache.clear();
+    return nv;
+  };
+
   const grant = async (subjectPub: string, role: 'reader' | 'writer', resource = DEFAULT): Promise<void> => {
     if (!(await isAdmin())) throw new Error('admin only');
     const cur = await ensureDekVer(resource);
     await putGrant(subjectPub, resource, role, false, cur);
     await wrapDekTo(subjectPub, resource, cur);
   };
-  const revoke = async (subjectPub: string, resource = DEFAULT): Promise<void> => {
+
+  // Revoke a grant. DEK rotation is OPTIONAL: with rotate=true (default, the
+  // secure choice) the revoked user is locked out of FUTURE writes immediately;
+  // with rotate=false they keep the current key until a later consensus rotation.
+  const revoke = async (subjectPub: string, resource = DEFAULT, rotate = true): Promise<void> => {
     if (!(await isAdmin())) throw new Error('admin only');
     await putGrant(subjectPub, resource, 'none', true, await dekVerFor(resource));
-    const nv = (await dekVerFor(resource)) + 1;
-    await putDekver(resource, nv);
-    for (const u of await knownUsers()) {
-      if (u.pub === subjectPub || u.pub === (await adminPub())) continue;
-      if (u.role === 'reader' || u.role === 'writer') await wrapDekTo(u.pub, resource, nv);
+    if (rotate) await rotateResource(resource, subjectPub); // revoked user already excluded (grant now revoked)
+    else dekCache.clear();
+  };
+
+  // Rotate one resource's DEK (a standalone admin action, e.g. at a consensus event).
+  const rotateDek = async (resource = DEFAULT): Promise<number> => {
+    if (!(await isAdmin())) throw new Error('admin only');
+    return rotateResource(resource);
+  };
+  // Rotate every resource's DEK — the "rotate at lock" option for the ceremony.
+  const rotateAllDeks = async (): Promise<void> => {
+    if (!(await isAdmin())) throw new Error('admin only');
+    for (const { resource } of await conn().all<{ resource: string }>('SELECT DISTINCT resource FROM dekver')) {
+      await rotateResource(resource);
     }
-    dekCache.clear();
   };
   // Admin imports a user's self-signed identity card (verify its signature, then
   // store the identity row verbatim with author == the card owner). After this,
@@ -437,7 +467,7 @@ export const createCrDevice = (engine: CrEngine, label: string) => {
     label,
     get session() { return state.session; },
     login, unlock, exportKeystore, logout, genesis, isAdmin, adminPub, myRole, knownUsers,
-    exportIdentityCard, importIdentityCard, grant, revoke, addNote, writeCell, archiveRecord,
+    exportIdentityCard, importIdentityCard, grant, revoke, rotateDek, rotateAllDeks, addNote, writeCell, archiveRecord,
     listNotes, heldResources, consolidate, stateRoot,
     recordCheckpoint, checkpoints, latestCheckpoint, exportSince,
     exportChangeset, importChangeset, syncFrom, close,
