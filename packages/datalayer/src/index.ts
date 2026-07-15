@@ -21,6 +21,10 @@ export type { Custodian, SealedVault, ContributedShare } from './vault';
 // Compartmented-RBAC pure verbs.
 export * as compartment from './compartment';
 
+// Consensus checkpoint-chain pure verbs.
+export * as consensus from './consensus';
+export type { Checkpoint } from './consensus';
+
 // Lock / unlock / distribute / archive / backup ceremony.
 export * as ceremony from './ceremony';
 export type { ConsolidatedRecord, LockInput, LockOutput, SliceRecipient, DistributedSlice } from './ceremony';

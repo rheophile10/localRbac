@@ -1,0 +1,20 @@
+{
+  "name": "consensus",
+  "cels": [
+    { "key": "consensus.chainFrom", "celType": "LockedLambdaCel", "locked": true,
+      "metadata": { "key": "consensus.chainFrom", "segment": "consensus", "name": "consensus.chainFrom", "kind": "native",
+        "description": "(checkpoints, hash) — parent-linked hashes from `hash` to root, newest first; [] if absent." } },
+    { "key": "consensus.tip", "celType": "LockedLambdaCel", "locked": true,
+      "metadata": { "key": "consensus.tip", "segment": "consensus", "name": "consensus.tip", "kind": "native",
+        "description": "(checkpoints) — the highest-epoch checkpoint hash, or '' if none." } },
+    { "key": "consensus.mergeBase", "celType": "LockedLambdaCel", "locked": true,
+      "metadata": { "key": "consensus.mergeBase", "segment": "consensus", "name": "consensus.mergeBase", "kind": "native",
+        "description": "(checkpoints, hashA, hashB) — most-recent common checkpoint of the two chains, or ''." } },
+    { "key": "consensus.isDescendant", "celType": "LockedLambdaCel", "locked": true,
+      "metadata": { "key": "consensus.isDescendant", "segment": "consensus", "name": "consensus.isDescendant", "kind": "native",
+        "description": "(checkpoints, hash, ancestor) — true iff `ancestor` is on the chain from `hash`." } },
+    { "key": "consensus.mergeVV", "celType": "LockedLambdaCel", "locked": true,
+      "metadata": { "key": "consensus.mergeVV", "segment": "consensus", "name": "consensus.mergeVV", "kind": "native",
+        "description": "(vvA, vvB) — merge two version vectors, taking the max db_version per site." } }
+  ]
+}

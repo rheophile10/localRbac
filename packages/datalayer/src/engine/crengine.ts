@@ -20,6 +20,7 @@
 import type { Conn } from './sqlite';
 import * as C from '../crypto';
 import * as compartment from '../compartment';
+import * as consensus from '../consensus';
 import type { ConsolidatedRecord } from '../ceremony';
 import type { Identity, Role } from '../types';
 
@@ -45,6 +46,7 @@ const SCHEMA = `
   CREATE TABLE keywrap(pk TEXT NOT NULL PRIMARY KEY, subject TEXT, resource TEXT, dek_ver INTEGER, box TEXT, author TEXT, sig TEXT);
   CREATE TABLE cell(pk TEXT NOT NULL PRIMARY KEY, rid TEXT, resource TEXT, col TEXT, ct TEXT, dek_ver INTEGER, author TEXT, sig TEXT);
   CREATE TABLE archived(rid TEXT NOT NULL PRIMARY KEY, flag INTEGER, author TEXT, sig TEXT);
+  CREATE TABLE checkpoint(hash TEXT NOT NULL PRIMARY KEY, epoch INTEGER, parent TEXT, vv TEXT, members TEXT, author TEXT, sig TEXT);
   SELECT crsql_as_crr('adminroot');
   SELECT crsql_as_crr('dekver');
   SELECT crsql_as_crr('identity');
@@ -52,6 +54,7 @@ const SCHEMA = `
   SELECT crsql_as_crr('keywrap');
   SELECT crsql_as_crr('cell');
   SELECT crsql_as_crr('archived');
+  SELECT crsql_as_crr('checkpoint');
 `;
 
 // ---- canonical bytes each row's signature covers -------------------------
@@ -62,6 +65,7 @@ const sigInput = {
   keywrap: (r: { subject: string; resource: string; dek_ver: number; box: string }) => j('keywrap', r.subject, r.resource, r.dek_ver, r.box),
   cell: (r: { pk: string; ct: string; dek_ver: number }) => j('cell', r.pk, r.ct, r.dek_ver),
   archived: (r: { rid: string; flag: number }) => j('archived', r.rid, r.flag),
+  checkpoint: (r: { hash: string; epoch: number; parent: string; vv: string; members: string }) => j('checkpoint', r.hash, r.epoch, r.parent, r.vv, r.members),
 };
 
 // A signed identity card — a user's public identity, shared out-of-band so an
@@ -328,6 +332,37 @@ export const createCrDevice = (engine: CrEngine, label: string) => {
     return C.sha256hex((rows[0]?.s ?? '') + '|' + (grants[0]?.s ?? ''));
   };
 
+  /* ---- consensus checkpoints (step 1) ------------------------------------
+   * A LOCK records a signed checkpoint {hash, epoch, parent, vv, members}. The
+   * chain of checkpoints is the sequence of agreed group states; `vv` is the
+   * version vector at that point, so a peer can diff "ops since checkpoint H". */
+  const checkpoints = async (): Promise<consensus.Checkpoint[]> =>
+    conn().all<consensus.Checkpoint>('SELECT hash, epoch, parent FROM checkpoint');
+  const latestCheckpoint = async (): Promise<string> => consensus.tip(await checkpoints());
+
+  /** Record a signed consensus checkpoint over the current state (admin only). */
+  const recordCheckpoint = async (): Promise<string> => {
+    if (!(await isAdmin())) throw new Error('admin only');
+    const cps = await checkpoints();
+    const parent = consensus.tip(cps);
+    const epoch = cps.reduce((m, c) => Math.max(m, c.epoch), -1) + 1;
+    const vv = JSON.stringify(await conn().versionVector());
+    const members = JSON.stringify((await conn().all<{ pub: string }>('SELECT pub FROM identity ORDER BY pub')).map((r) => r.pub));
+    const hash = await C.sha256hex(j('checkpoint', await stateRoot(), epoch, parent));
+    const row = { hash, epoch, parent, vv, members };
+    const sig = await sign(sigInput.checkpoint(row));
+    await conn().run('INSERT OR REPLACE INTO checkpoint(hash,epoch,parent,vv,members,author,sig) VALUES(?,?,?,?,?,?,?)',
+      [hash, epoch, parent, vv, members, session().edPub, sig]);
+    return hash;
+  };
+
+  /** Export the diff of ops added since a given checkpoint (its version vector). */
+  const exportSince = async (checkpointHash: string): Promise<string> => {
+    const vv = await conn().scalar<string>('SELECT vv FROM checkpoint WHERE hash=?', [checkpointHash]);
+    if (vv === null) throw new Error('unknown checkpoint');
+    return conn().exportSinceVV(JSON.parse(vv) as Record<string, number>);
+  };
+
   // Read the asserted rows out of a staging conn, verify each row's embedded
   // signature, and check the embedded author's grant against MAIN. Returns the
   // list of rejection reasons (empty = all authorized).
@@ -356,6 +391,10 @@ export const createCrDevice = (engine: CrEngine, label: string) => {
     for (const r of await staging.all<{ subject: string; resource: string; dek_ver: number; box: string; author: string; sig: string }>('SELECT subject,resource,dek_ver,box,author,sig FROM keywrap')) {
       if (!await C.verifyMessage(sigInput.keywrap(r), r.sig, r.author)) bad.push(`keywrap ${r.subject}: bad sig`);
       else if (!isAdminAuthor(r.author)) bad.push(`keywrap ${r.subject}: not admin`);
+    }
+    for (const r of await staging.all<{ hash: string; epoch: number; parent: string; vv: string; members: string; author: string; sig: string }>('SELECT hash,epoch,parent,vv,members,author,sig FROM checkpoint')) {
+      if (!await C.verifyMessage(sigInput.checkpoint(r), r.sig, r.author)) bad.push(`checkpoint ${r.hash}: bad sig`);
+      else if (!isAdminAuthor(r.author)) bad.push(`checkpoint ${r.hash}: not admin`);
     }
     if (bad.length) return bad; // don't trust staging's grant state if system rows are tainted
 
@@ -401,6 +440,7 @@ export const createCrDevice = (engine: CrEngine, label: string) => {
     login, unlock, exportKeystore, logout, genesis, isAdmin, adminPub, myRole, knownUsers,
     exportIdentityCard, importIdentityCard, grant, revoke, addNote, writeCell, archiveRecord,
     listNotes, heldResources, consolidate, stateRoot,
+    recordCheckpoint, checkpoints, latestCheckpoint, exportSince,
     exportChangeset, importChangeset, syncFrom, close,
   };
 };

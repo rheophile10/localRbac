@@ -86,6 +86,34 @@ export class Conn {
   /** Apply a changeset produced by exportChangesetSQL (cr-sqlite merges it). */
   applyChangesetSQL(sql: string): Promise<void> { return sql.trim() ? this.exec(sql) : Promise.resolve(); }
 
+  /** The version vector { siteHex → max db_version } — a portable description of
+   *  "what ops this replica has", the anchor a consensus checkpoint records. */
+  async versionVector(): Promise<Record<string, number>> {
+    const rows = await this.all<{ s: string; v: number }>(
+      'SELECT lower(hex(site_id)) AS s, max(db_version) AS v FROM crsql_changes GROUP BY site_id');
+    const vv: Record<string, number> = {};
+    for (const r of rows) vv[r.s] = Number(r.v);
+    return vv;
+  }
+
+  /** Export the changeset of ops NEWER than a version vector — the incremental
+   *  "diff since checkpoint". Portable across replicas (keyed by site, not a
+   *  local scalar). Empty vv → full state. */
+  exportSinceVV(vv: Record<string, number>): Promise<string> {
+    const sites = Object.keys(vv);
+    const clauses = sites.map((s) => `(site_id = X'${s}' AND db_version > ${Number(vv[s])})`);
+    // sites we've never seen contribute all their ops
+    if (sites.length) clauses.push(`(site_id NOT IN (${sites.map((s) => `X'${s}'`).join(',')}))`);
+    const where = clauses.length ? clauses.join(' OR ') : '1';
+    const sql =
+      `SELECT 'INSERT INTO crsql_changes(${CHANGE_COLS}) VALUES('||` +
+      `quote("table")||','||quote("pk")||','||quote("cid")||','||quote("val")||','||` +
+      `quote("col_version")||','||quote("db_version")||','||quote("site_id")||','||` +
+      `quote("cl")||','||quote("seq")||');' AS line ` +
+      `FROM crsql_changes WHERE ${where} ORDER BY db_version, seq`;
+    return this.all<{ line: string }>(sql).then((rows) => rows.map((r) => r.line).join('\n'));
+  }
+
   async finalize(): Promise<void> {
     await this.#lock(async () => { try { await this.#sqlite3.exec(this.#db, 'SELECT crsql_finalize()'); } catch { /* ignore */ } });
   }
