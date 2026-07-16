@@ -60,7 +60,9 @@ export interface AddResult { group: MlsGroup; welcome: Uint8Array; commit: Uint8
  *  Welcome (send to the new member) and the commit (send to existing members). */
 export const addMember = async (group: MlsGroup, memberPublicPackage: KeyPackage, suite: MlsSuite): Promise<AddResult> => {
   const add: Proposal = { proposalType: 'add', add: { keyPackage: memberPublicPackage } };
-  const r = await createCommit({ state: group, cipherSuite: suite }, { extraProposals: [add] });
+  // ratchetTreeExtension: the Welcome carries the tree, so a joiner needs no
+  // separate out-of-band channel for it (self-contained transport).
+  const r = await createCommit({ state: group, cipherSuite: suite }, { extraProposals: [add], ratchetTreeExtension: true });
   if (!r.welcome) throw new Error('add produced no welcome');
   return { group: r.newState, welcome: encodeWelcome(r.welcome), commit: encodeMessage(r.commit), consumed: r.consumed };
 };
@@ -75,8 +77,10 @@ export const removeMember = async (group: MlsGroup, leafIndex: number, suite: Ml
   return { group: r.newState, commit: encodeMessage(r.commit), consumed: r.consumed };
 };
 
-/** Join a group from a Welcome (needs the committer's ratchet tree). */
-export const joinFromWelcome = (welcome: Uint8Array, self: MlsIdentity, ratchetTree: RatchetTree, suite: MlsSuite): Promise<MlsGroup> =>
+/** Join a group from a Welcome. The ratchet tree is optional: our Welcomes
+ *  embed it (ratchetTreeExtension), so pass `undefined` unless you carry it
+ *  out-of-band. */
+export const joinFromWelcome = (welcome: Uint8Array, self: MlsIdentity, ratchetTree: RatchetTree | undefined, suite: MlsSuite): Promise<MlsGroup> =>
   joinGroup(decodeWelcome(welcome), self.publicPackage, self.privatePackage, emptyPskIndex, suite, ratchetTree);
 
 /** Apply someone else's commit (add / remove / update) to advance your state. */

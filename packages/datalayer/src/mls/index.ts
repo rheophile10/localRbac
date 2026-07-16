@@ -9,3 +9,9 @@ export {
 export type {
   MlsSuite, MlsGroup, MlsIdentity, AddResult, RemoveResult, SendResult, ReceiveResult,
 } from './mls';
+
+// Compartmented RBAC over per-resource MLS groups (the keywrap replacement).
+export { createCoordinatorCompartments, createMemberCompartments } from './compartments';
+export type {
+  CoordinatorCompartments, MemberCompartments, GrantMaterial, RevokeMaterial,
+} from './compartments';

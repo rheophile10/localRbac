@@ -190,6 +190,19 @@ The verbs are pure (`state → new state`) and resource-agnostic; the ciphersuit
 (`MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519`, matching our X25519/Ed25519/
 AES-GCM/SHA-256 stack) and exporter label are protocol constants.
 
+**Compartments preserved: one MLS group per resource** (`mls/compartments.ts`).
+A *single* group would collapse compartments — every member shares one epoch
+secret, so anyone could derive any resource's DEK. With one group per resource,
+only that resource's granted members share its secret; a non-member holds no
+group state for it, so its DEK is simply underivable. `grant` = MLS *add* (emits
+a self-contained Welcome + commit), `revoke` = MLS *remove* (advances the epoch →
+DEK rotates). This replaces the per-reader keywrap while keeping RBAC
+compartmentalized (tested in `tests/mls-compartments.test.ts`). MLS needs
+handshake *ordering* that a CRDT doesn't give for free — in localRbac the
+consensus ceremony is where the coordinator sequences an epoch's membership
+commits; wiring that ordering + MLS-state persistence into `crengine` (retiring
+`keywrap`) is the remaining integration step.
+
 ## Status
 
 Proof of concept. Implemented: consensus checkpoints, merge-confirm by state
