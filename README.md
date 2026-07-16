@@ -171,11 +171,33 @@ npm run test:unit          # datalayer Vitest (RBAC, consensus, shamir, vault)
 npm run test:e2e           # build -> Playwright against the 3-iframe demo
 ```
 
+## Group key agreement — MLS (RFC 9420, `packages/datalayer/src/mls/`)
+
+A subgroup can run an **MLS group** for group-native key agreement and
+messaging, via [`ts-mls`](https://github.com/LukaJCB/ts-mls) — a pure-TypeScript
+RFC 9420 implementation over WebCrypto, **no WASM and no network**, so it bundles
+into the same single `file://` HTML (proven: `packages/app/mls-spike.ts` runs a
+full handshake in one self-contained file).
+
+- Every member independently derives the **same per-resource DEK at each epoch**
+  (`mlsExporter`) — replacing per-reader X25519 keywraps with one group secret.
+- **Add / remove** advances the epoch, so the group key **rotates with forward +
+  post-compromise security** — the "rotate the DEK at consensus" primitive, made
+  group-native.
+- Authenticated **group application messages** (`send` / `receive`).
+
+The verbs are pure (`state → new state`) and resource-agnostic; the ciphersuite
+(`MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519`, matching our X25519/Ed25519/
+AES-GCM/SHA-256 stack) and exporter label are protocol constants.
+
 ## Status
 
-Proof of concept. Steps implemented: consensus checkpoints, merge-confirm by
-state root, optional DEK rotation, and the wipe-and-rebuild consensus loop.
-Group messaging (OpenMLS) is the next milestone.
+Proof of concept. Implemented: consensus checkpoints, merge-confirm by state
+root, optional DEK rotation, the wipe-and-rebuild consensus loop, and MLS group
+key agreement + messaging (headless + verified in the single-file `file://`
+build). Wiring MLS-derived group keys in as the primary DEK source for the
+compartmented engine (replacing per-reader keywraps) is the next integration
+step.
 
 ## References
 

@@ -12,10 +12,18 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@noble/ciphers": "^2.2.0",
+    "@hpke/chacha20poly1305": "1.7.1",
+    "@hpke/core": "1.8.0",
+    "@hpke/dhkem-x448": "1.7.0",
+    "@hpke/hybridkem-x-wing": "0.6.1",
+    "@hpke/ml-kem": "0.2.1",
+    "@noble/ciphers": "2.1.1",
+    "@noble/curves": "2.0.1",
+    "@noble/post-quantum": "0.5.2",
     "@vlcn.io/crsqlite-wasm": "^0.16.0",
     "@vlcn.io/wa-sqlite": "^0.22.0",
-    "hash-wasm": "^4.12.0"
+    "hash-wasm": "^4.12.0",
+    "ts-mls": "^1.6.2"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",

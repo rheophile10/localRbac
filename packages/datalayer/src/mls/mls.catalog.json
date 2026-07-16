@@ -1,0 +1,125 @@
+{
+  "name": "mls",
+  "cels": [
+    {
+      "key": "mls.createIdentity",
+      "celType": "LockedLambdaCel",
+      "locked": true,
+      "metadata": {
+        "key": "mls.createIdentity",
+        "segment": "mls",
+        "name": "mls.createIdentity",
+        "kind": "native",
+        "description": "(name, suite) — a member's MLS identity: a signed KeyPackage (public) + its private keys."
+      }
+    },
+    {
+      "key": "mls.foundGroup",
+      "celType": "LockedLambdaCel",
+      "locked": true,
+      "metadata": {
+        "key": "mls.foundGroup",
+        "segment": "mls",
+        "name": "mls.foundGroup",
+        "kind": "native",
+        "description": "(groupId, self, suite) — found a new MLS group as its first member; returns the group state."
+      }
+    },
+    {
+      "key": "mls.addMember",
+      "celType": "LockedLambdaCel",
+      "locked": true,
+      "metadata": {
+        "key": "mls.addMember",
+        "segment": "mls",
+        "name": "mls.addMember",
+        "kind": "native",
+        "description": "(group, memberPublicPackage, suite) — advance the group and emit a Welcome (to the joiner) + commit (to members)."
+      }
+    },
+    {
+      "key": "mls.removeMember",
+      "celType": "LockedLambdaCel",
+      "locked": true,
+      "metadata": {
+        "key": "mls.removeMember",
+        "segment": "mls",
+        "name": "mls.removeMember",
+        "kind": "native",
+        "description": "(group, leafIndex, suite) — remove a member; advances the epoch so the group key rotates."
+      }
+    },
+    {
+      "key": "mls.joinFromWelcome",
+      "celType": "LockedLambdaCel",
+      "locked": true,
+      "metadata": {
+        "key": "mls.joinFromWelcome",
+        "segment": "mls",
+        "name": "mls.joinFromWelcome",
+        "kind": "native",
+        "description": "(welcome, self, ratchetTree, suite) — join a group from a Welcome message."
+      }
+    },
+    {
+      "key": "mls.applyCommit",
+      "celType": "LockedLambdaCel",
+      "locked": true,
+      "metadata": {
+        "key": "mls.applyCommit",
+        "segment": "mls",
+        "name": "mls.applyCommit",
+        "kind": "native",
+        "description": "(group, commit, suite) — apply another member's commit to advance your state to the new epoch."
+      }
+    },
+    {
+      "key": "mls.resourceDek",
+      "celType": "LockedLambdaCel",
+      "locked": true,
+      "metadata": {
+        "key": "mls.resourceDek",
+        "segment": "mls",
+        "name": "mls.resourceDek",
+        "kind": "native",
+        "description": "(group, resource, suite, length) — derive this group's per-resource DEK at the current epoch (mlsExporter); identical for every member."
+      }
+    },
+    {
+      "key": "mls.epoch",
+      "celType": "LockedLambdaCel",
+      "locked": true,
+      "metadata": {
+        "key": "mls.epoch",
+        "segment": "mls",
+        "name": "mls.epoch",
+        "kind": "native",
+        "description": "(group) — the current MLS epoch (increments on every commit)."
+      }
+    },
+    {
+      "key": "mls.send",
+      "celType": "LockedLambdaCel",
+      "locked": true,
+      "metadata": {
+        "key": "mls.send",
+        "segment": "mls",
+        "name": "mls.send",
+        "kind": "native",
+        "description": "(group, plaintext, suite) — encrypt an authenticated application message to the group."
+      }
+    },
+    {
+      "key": "mls.receive",
+      "celType": "LockedLambdaCel",
+      "locked": true,
+      "metadata": {
+        "key": "mls.receive",
+        "segment": "mls",
+        "name": "mls.receive",
+        "kind": "native",
+        "description": "(group, message, suite) — process an incoming group message: application plaintext, or a commit that advances state."
+      }
+    }
+  ]
+}

@@ -25,6 +25,10 @@ export * as compartment from './compartment';
 export * as consensus from './consensus';
 export type { Checkpoint } from './consensus';
 
+// MLS (RFC 9420) group key agreement + messaging — pure TS, no WASM/network.
+export * as mls from './mls';
+export type { MlsSuite, MlsGroup, MlsIdentity } from './mls';
+
 // Lock / unlock / distribute / archive / backup ceremony.
 export * as ceremony from './ceremony';
 export type { ConsolidatedRecord, LockInput, LockOutput, SliceRecipient, DistributedSlice } from './ceremony';
