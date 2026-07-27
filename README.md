@@ -160,6 +160,37 @@ packages/
     tests/rbac.spec.ts      Playwright — drives the 3-iframe demo end to end
 ```
 
+## The SQLite engine
+
+The database is built **locally, from pinned source**, by
+[`browser-sqlite/sqlite-wasm-build`](../sqlite-wasm-build) — the `base` variant
+(cr-sqlite + FTS5), which is the recipe that reproduces the published
+`@vlcn.io/wa-sqlite`:
+
+```json
+"@vlcn.io/wa-sqlite": "file:../../../sqlite-wasm-build/dist/base"
+```
+
+That is the only change from the published package — the variant declares itself
+under the same name and exposes the same import specifiers, so no source moved.
+Switching to `geo` (R\*Tree, Geopoly) or `vec` (sqlite-vec) is the same line with a
+different word, which is the point of building them separately.
+
+Why build rather than install: `SQLITE_OMIT_LOAD_EXTENSION` is set, so nothing can
+be loaded at runtime and every capability has to be compiled in. Depending on the
+published binary means depending on someone else's choice of what to compile.
+
+Verify you are on the local build rather than the registry copy:
+
+```bash
+sha256sum node_modules/@vlcn.io/wa-sqlite/crsqlite.wasm \
+          ../sqlite-wasm-build/dist/base/crsqlite.wasm   # must match
+```
+
+`packages/datalayer` no longer depends on `@vlcn.io/crsqlite-wasm`. Nothing
+imported it — it appeared only in a spike comment — and it pulled the *published*
+`wa-sqlite` in transitively, which npm then hoisted over the local build.
+
 ## Build, run, test
 
 ```bash
